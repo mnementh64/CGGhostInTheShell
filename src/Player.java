@@ -3,6 +3,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.stream.Collectors;
 
 /**
  * Auto-generated code below aims at helping you parse
@@ -43,8 +44,8 @@ class Player
 	 */
 
 	static Map<Integer, Factory> factoryMap = new HashMap<>();
-	//	static List<Troop> troops = new ArrayList<>();
 	static Map<Integer, Troop> troopMap = new HashMap<>();
+	static Map<Integer, Bomb> bombMap = new HashMap<>();
 
 	public static void main(String args[])
 	{
@@ -86,9 +87,13 @@ class Player
 				{
 					Factory.update(factoryMap, entityId, arg1, arg2, arg3);
 				}
-				else
+				else if (entityType.equals("TROOP"))
 				{
 					Troop.update(troopMap, entityId, arg1, arg2, arg3, arg4, arg5);
+				}
+				else
+				{
+					Bomb.update(bombMap, entityId, arg1, arg2, arg3, arg4);
 				}
 			}
 
@@ -128,7 +133,6 @@ class Player
 
 		static String decide(Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap)
 		{
-			final Decision bestDecision = new Decision();
 			StringBuilder command = new StringBuilder("WAIT;");
 
 			// ask each factory to do its job and return the command and its level of interest
@@ -138,11 +142,6 @@ class Player
 					{
 						Decision decision = factory.computeDecision(factoryMap, troopMap);
 						command.append(decision.command).append(";");
-						//if (decision.interest > bestDecision.interest)
-						//{
-						//    bestDecision.interest = decision.interest;
-						//	bestDecision.command = decision.command;
-						//}
 					});
 			if (command.toString().endsWith(";"))
 				command.deleteCharAt(command.length() - 1);
@@ -162,8 +161,7 @@ class Factory
 
 	static void update(Map<Integer, Factory> factoryMap, int id, int owner, int nbCyborgs, int productionUnits)
 	{
-		factoryMap.putIfAbsent(id, new Factory());
-		Factory factory = factoryMap.get(id);
+		Factory factory = factoryMap.computeIfAbsent(id, integer -> new Factory());
 		factory.id = id;
 		factory.owner = owner;
 		factory.nbCyborgs = nbCyborgs;
@@ -201,7 +199,7 @@ class Factory
 		System.err.println("Factory " + this.id + " - evaluation ...");
 		for (Link link : this.links)
 		{
-			int interest = evaluateMove(link.idFactoryTgt, link.distance, factoryMap);
+			int interest = evaluateMove(link.idFactoryTgt, link.distance, factoryMap, troopMap);
 			System.err.println("\tCheck link to " + link.idFactoryTgt + " - interest : " + interest);
 			if (interest > bestInterest)
 			{
@@ -213,8 +211,15 @@ class Factory
 		return new Decision(bestInterest, from(bestLink, factoryMap.get(bestLink.idFactoryTgt)));
 	}
 
-	private int evaluateMove(int idFactoryTgt, int distance, Map<Integer, Factory> factoryMap)
+	private int evaluateMove(int idFactoryTgt, int distance, Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap)
 	{
+		// if some troops of mine already move to target, then abort
+		List<Troop> movingTroops = troopMap.values().stream()
+				.filter(t -> t.idFactoryTgt == idFactoryTgt && Owner.isMine(t.owner))
+				.collect(Collectors.toList());
+		if (!movingTroops.isEmpty())
+			return -80;
+
 		Factory targetFactory = factoryMap.get(idFactoryTgt);
 		int value = 100;
 
@@ -224,13 +229,13 @@ class Factory
 		value += Owner.isOpponent(targetFactory.owner) ? 10 : -10;
 
 		// distance
-		value -= 2 * distance;
+		value -= 3 * distance;
 
 		// Nb Production units --> malus for 0 production units
 		if (targetFactory.productionUnits == 0)
 			value -= 10;
 		else
-			value += 10 * targetFactory.productionUnits;
+			value += 15 * targetFactory.productionUnits;
 
 		// can move only half the cyborgs --> no need to move if they are more numerous
 //		int half = nbCyborgs / 2;
@@ -272,8 +277,7 @@ class Troop
 
 	static void update(Map<Integer, Troop> troopMap, int id, int owner, int idFactorySrc, int idFactoryTgt, int nbCyborgs, int timeRemaining)
 	{
-		troopMap.putIfAbsent(id, new Troop());
-		Troop troop = troopMap.get(id);
+		Troop troop = troopMap.computeIfAbsent(id, integer -> new Troop());
 		troop.id = id;
 		troop.owner = owner;
 		troop.idFactorySrc = idFactorySrc;
@@ -286,6 +290,32 @@ class Troop
 	public String toString()
 	{
 		return id + "/" + Owner.getOwner(owner) + " -> " + nbCyborgs + " cyborgs from " + idFactorySrc + " to " + idFactoryTgt + ". Reach in " + timeRemaining;
+	}
+}
+
+class Bomb
+{
+
+	int id;
+	int owner;
+	int idFactorySrc;
+	int idFactoryTgt;
+	int timeRemaining;
+
+	static void update(Map<Integer, Bomb> bombMap, int id, int owner, int idFactorySrc, int idFactoryTgt, int timeRemaining)
+	{
+		Bomb bomb = bombMap.computeIfAbsent(id, integer -> new Bomb());
+		bomb.id = id;
+		bomb.owner = owner;
+		bomb.idFactorySrc = idFactorySrc;
+		bomb.idFactoryTgt = idFactoryTgt;
+		bomb.timeRemaining = timeRemaining;
+	}
+
+	@Override
+	public String toString()
+	{
+		return id + "/" + Owner.getOwner(owner) + " -> from " + idFactorySrc + " to " + idFactoryTgt + ". Reach in " + timeRemaining;
 	}
 }
 
