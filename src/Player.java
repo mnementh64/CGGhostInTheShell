@@ -210,7 +210,7 @@ class Player
 					.filter(f -> Owner.isOpponent(f.owner) && f.productionUnits == 3)
 					.peek(f -> System.err.println("\tOpponent factory candidate " + f.id))
 					// ignore a factory already targeted by a bomb
-					.filter(f -> bombMap.values().stream()
+					.filter(f -> !bombMap.values().stream()
 							.anyMatch(b -> b.idFactoryTgt == f.id))
 					// find the closest of my factories
 					.map(f -> f.links.stream()
@@ -313,10 +313,13 @@ class Factory
 		// - with less (cyborgs + production units) than current
 		List<CandidateFactory> candidateTargetFactories = links.stream()
 				// non-mine factories with less cyborgs than mine
+				// Of course, ignore factories I have sent a bomb to !!
 				.filter(l ->
 				{
 					Factory targetFactory = factoryMap.get(l.idFactoryTgt);
-					return !Owner.isMine(targetFactory.owner) && targetFactory.nbCyborgs < this.nbCyborgs;
+					boolean iGonnaBombThisOne = bombMap.values().stream()
+							.anyMatch(b -> Owner.isMine(b.owner) && b.idFactoryTgt == targetFactory.id);
+					return !Owner.isMine(targetFactory.owner) && targetFactory.nbCyborgs < this.nbCyborgs && !iGonnaBombThisOne;
 				})
 				// closest first
 				.sorted((l1, l2) ->
@@ -361,12 +364,9 @@ class Factory
 			actions.add(new ActionMove(10, this.id, candidateFactory.factory.id, nb));
 		}
 
-		if (actions.isEmpty())
-			actions.add(new ActionWait(0));
-
-//		// No move action found ? Some cyborgs remain ? Then attack also bigger factories
-//		if (actions.isEmpty() || nbCyborgsToDispatch > 0)
-//			actions.add(computeOtherActions(nbCyborgsToDispatch, factoryMap, troopMap, bombMap));
+		// No move action found ? Some cyborgs remain ? Then attack also bigger factories
+		if (actions.isEmpty() || nbCyborgsToDispatch > 0)
+			actions.add(computeOtherActions(nbCyborgsToDispatch, factoryMap, troopMap, bombMap));
 
 		System.err.println("\t--> " + actions.size() + " actions found");
 		return actions;
@@ -381,7 +381,14 @@ class Factory
 		final Action action;
 		Optional<Link> candidateLink = links.stream()
 				// non-mine factories
-				.filter(l -> !Owner.isMine(factoryMap.get(l.idFactoryTgt).owner))
+				// Of course, ignore factories I have sent a bomb to !!
+				.filter(l ->
+				{
+					Factory targetFactory = factoryMap.get(l.idFactoryTgt);
+					boolean iGonnaBombThisOne = bombMap.values().stream()
+							.anyMatch(b -> Owner.isMine(b.owner) && b.idFactoryTgt == targetFactory.id);
+					return !Owner.isMine(targetFactory.owner) && !iGonnaBombThisOne;
+				})
 				// closest first
 				.sorted((l1, l2) ->
 				{
@@ -403,6 +410,10 @@ class Factory
 			System.err.println("\ttry to move " + nb + " to target " + targetFactory.id + " at " + l.distance);
 			return new ActionMove(10, this.id, targetFactory.id, nb);
 		}
+
+		// if enough cyborg, then increase the production
+		if (nbCyborgsToDispatch >= 10)
+			return new ActionIncreaseProduction(10, this.id);
 
 		return new ActionWait(0);
 	}
