@@ -2,7 +2,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Scanner;
 import java.util.stream.Collectors;
 
@@ -47,6 +46,7 @@ class Player
 	static Map<Integer, Factory> factoryMap = new HashMap<>();
 	static Map<Integer, Troop> troopMap = new HashMap<>();
 	static Map<Integer, Bomb> bombMap = new HashMap<>();
+	static int nbBombs = 2;
 
 	public static void main(String args[])
 	{
@@ -108,7 +108,18 @@ class Player
 			else
 				debugTroops();
 
-			System.out.println(MetaFactory.decide(factoryMap, troopMap, bombMap));
+			String commands = MetaFactory.decide(factoryMap, troopMap, bombMap, nbBombs);
+			System.out.println(commands);
+
+			// decrease bomb number
+			if (commands.contains("BOMB"))
+			{
+				int index1 = commands.indexOf("BOMB");
+				int index2 = commands.indexOf("BOMB", index1 + 1);
+				nbBombs--;
+				nbBombs -= index2 > 0 ? 1 : 0;
+			}
+
 			first = false;
 		}
 	}
@@ -133,25 +144,65 @@ class Player
 	static class MetaFactory
 	{
 
-		static String decide(Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap, Map<Integer, Bomb> bombMap)
+		static String decide(Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap, Map<Integer, Bomb> bombMap, int nbBombs)
 		{
+			List<Action> actions = new ArrayList<>();
+
 			// ask each factory to do its job and return the command and its level of interest
-			Map<Integer, Action> defaultActions = factoryMap.values().stream()
+			actions.addAll(factoryMap.values().stream()
 					.filter(f -> Owner.isMine(f.owner))
-					.collect(Collectors.toMap(f -> f.id, f -> f.computeDefaultAction(factoryMap, troopMap, bombMap)));
+					.flatMap(f -> f.computeDefaultActions(factoryMap, troopMap, bombMap).stream())
+					.collect(Collectors.toList()));
 
 			// check if some of my troops already move to these targets, so reduce the number of cyborgs to move
 
 			// check for HELP
 
 			// Opportunity for BOMBs
+//			actions.addAll(checkForBombs(factoryMap, troopMap, bombMap, nbBombs));
 
 			// convert all actions into command
-			String command = defaultActions.values().stream()
+			String command = actions.stream()
 					.map(Action::toCommand)
 					.collect(Collectors.joining(";"));
 
 			return command.length() > 0 ? command : "WAIT";
+		}
+
+		static List<Action> checkForBombs(Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap, Map<Integer, Bomb> bombMap, int nbBombs)
+		{
+			List<Action> actions = new ArrayList<>();
+
+			if (nbBombs == 0)
+				return actions;
+
+			List<Action> bombActions = factoryMap.values().stream()
+					.filter(f -> Owner.isOpponent(f.owner) && f.nbCyborgs > 50)
+					.sorted((f1, f2) -> f1.nbCyborgs > f2.nbCyborgs ? -1 : 1)
+					.limit(2 - nbBombs)
+					.map(f -> (Action) new ActionBomb(0, -1, f.id))
+					.collect(Collectors.toList());
+
+			// need to find the right number of my factories to send bombs
+			// check for the one with the less number of cyborgs
+			if (!bombActions.isEmpty())
+			{
+				List<Factory> myFactories = factoryMap.values().stream()
+						.filter(f -> Owner.isMine(f.owner))
+						.sorted((f1, f2) -> f1.nbCyborgs > f2.nbCyborgs ? 1 : -1)
+						.limit(bombActions.size())
+						.collect(Collectors.toList());
+
+				((ActionBomb) bombActions.get(0)).from = myFactories.get(0).id;
+				actions.add(bombActions.get(0));
+				if (bombActions.size() == 2)
+				{
+					((ActionBomb) bombActions.get(1)).from = myFactories.get(1).id;
+					actions.add(bombActions.get(1));
+				}
+			}
+
+			return actions;
 		}
 	}
 }
@@ -198,22 +249,23 @@ class Factory
 		});
 	}
 
-	Action computeDefaultAction(Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap, Map<Integer, Bomb> bombMap)
+	List<Action> computeDefaultActions(Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap, Map<Integer, Bomb> bombMap)
 	{
 		System.err.println("Factory " + this.id + " - evaluation ...");
-		Action action;
+		List<Action> actions = new ArrayList<>();
 
 		// look for :
 		// - the closest non-mine link
 		// - the less numerous
 		// - with less (cyborgs + production units) than current
-		Optional<ActionMove> actionMove = links.stream()
+		List<CandidateFactory> candidateTargetFactories = links.stream()
+				// non mine factories with less cyborgs than mine
 				.filter(l ->
 				{
 					Factory targetFactory = factoryMap.get(l.idFactoryTgt);
-//					int nbOpponents = targetFactory.projects(l.distance, troopMap);
-					return !Owner.isMine(targetFactory.owner) && (targetFactory.nbCyborgs + targetFactory.productionUnits * l.distance) < this.nbCyborgs;
+					return !Owner.isMine(targetFactory.owner) && targetFactory.nbCyborgs < this.nbCyborgs;
 				})
+				// closest first
 				.sorted((l1, l2) ->
 				{
 					if (l1.distance != l2.distance)
@@ -225,37 +277,42 @@ class Factory
 						return t1.nbCyborgs >= t2.nbCyborgs ? 1 : -1;
 					}
 				})
-				.map(l ->
-				{
-					Factory targetFactory = factoryMap.get(l.idFactoryTgt);
-//					int interest = evaluateMove(targetFactory, l.distance, troopMap);
+				.map(l -> new CandidateFactory(l.distance, factoryMap.get(l.idFactoryTgt)))
+				.collect(Collectors.toList());
+		if (candidateTargetFactories.isEmpty())
+			return actions;
 
-					// number of cyborgs to move
-					int nb = targetFactory.nbCyborgs + targetFactory.nbCyborgs + 1;
+		// now, create a move action for each target factory, ensuring source factory have enough cyborgs to move
+		// number of cyborgs available for move actions
+		int nbCyborgsToDispatch = nbCyborgs - 1;
+		for (CandidateFactory candidateFactory : candidateTargetFactories)
+		{
+			System.err.println("-> check target factory at distance " + candidateFactory.distance);
+			// compute the target factory's number of cyborgs when move ends
+//			int nbOpponents = targetFactory.projects(l.distance, troopMap);
+			int nbOpponents = candidateFactory.factory.nbCyborgs;
 
-					// If a bomb is running --> all of them !
-					if (bombMap.values().stream()
-							.anyMatch(b -> !Owner.isMine(b.owner)))
-					{
-						nb = nbCyborgs;
-					}
+			// enough cyborgs left to fight ?
+			if (nbCyborgsToDispatch <= nbOpponents)
+				continue;
 
-					// if other troops of mine already go there, then compute the difference
+			// if other troops of mine already go there, then compute the difference
 //					int alreadyGo = troopMap.values().stream()
 //							.filter(t -> Owner.isMine(t.owner))
 
-					System.err.println("\t\ttry to move " + nb + " to target " + targetFactory.id + " at " + l.distance);
-					return new ActionMove(10, this.id, targetFactory.id, nb);
-				})
-//				.sorted((a1, a2) -> a1.interest > a2.interest ? 1 : -1)
-				.findFirst();
-		if (actionMove.isPresent())
-			action = actionMove.get();
-		else
-			action = new ActionWait(0);
+			// ok to move !
+			int nb = nbOpponents + 1;
+			nbCyborgsToDispatch -= nb;
+			System.err.println("\ttry to move " + nb + " to target " + candidateFactory.factory.id + " at " + candidateFactory.distance + " (remains "
+					+ nbCyborgsToDispatch + ")");
+			actions.add(new ActionMove(10, this.id, candidateFactory.factory.id, nb));
+		}
 
-		System.err.println("\t--> best action is " + action.toCommand());
-		return action;
+		if (actions.isEmpty())
+			actions.add(new ActionWait(0));
+
+		System.err.println("\t--> " + actions.size() + " actions found");
+		return actions;
 	}
 
 //	private int evaluateMove(Factory targetFactory, int distance, Map<Integer, Troop> troopMap)
@@ -397,6 +454,7 @@ class Decision
 abstract class Action
 {
 
+	public int factoryId;
 	public int interest;
 	public String which;
 
@@ -496,5 +554,18 @@ class ActionIncreaseProduction extends Action
 	public String toCommand()
 	{
 		return "INC " + which;
+	}
+}
+
+class CandidateFactory
+{
+
+	int distance;
+	Factory factory;
+
+	public CandidateFactory(int distance, Factory factory)
+	{
+		this.distance = distance;
+		this.factory = factory;
 	}
 }
