@@ -72,9 +72,10 @@ class Player
 		}
 
 		// game loop
-		boolean first = true;
+		int nbTurns = 1;
 		while (true)
 		{
+			System.err.println("Turn " + nbTurns);
 			int entityCount = in.nextInt(); // the number of entities (e.g. factories and troops)
 			troopMap.clear();
 			bombMap.clear();
@@ -102,16 +103,16 @@ class Player
 			}
 
 			// add links (in both ways) to factories
-			if (first)
+			if (nbTurns == 1)
 				Factory.updateLinks(factoryMap, links);
 
-			if (first)
+			if (nbTurns == 1)
 				debugSystem();
 			else
 //				debugTroops();
 				debugBombs();
 
-			String commands = MetaFactory.decide(factoryMap, troopMap, bombMap, nbBombs);
+			String commands = MetaFactory.decide(nbTurns, factoryMap, troopMap, bombMap, nbBombs);
 			System.out.println(commands);
 
 			// decrease bomb number
@@ -123,7 +124,7 @@ class Player
 				nbBombs -= index2 > 0 ? 1 : 0;
 			}
 
-			first = false;
+			nbTurns++;
 		}
 	}
 
@@ -153,9 +154,19 @@ class Player
 	static class MetaFactory
 	{
 
-		static String decide(Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap, Map<Integer, Bomb> bombMap, int nbBombs)
+		static String decide(int nbTurns, Map<Integer, Factory> factoryMap, Map<Integer, Troop> troopMap, Map<Integer, Bomb> bombMap, int nbBombs)
 		{
 			List<Action> actions = new ArrayList<>();
+
+			// first turn, INC factory production if not max
+			if (nbTurns == 1)
+			{
+				Factory singleFactory = factoryMap.values().stream()
+						.filter(f -> Owner.isMine(f.owner))
+						.findFirst().get();
+				if (singleFactory.productionUnits < 3)
+					return new ActionIncreaseProduction(0, singleFactory.id).toCommand();
+			}
 
 			// ask each factory to do its job and return the command and its level of interest
 			actions.addAll(factoryMap.values().stream()
@@ -224,9 +235,8 @@ class Player
 					.sorted((l1, l2) -> l1.distance >= l2.distance ? 1 : -1)
 					.limit(nbBombs)
 					.map(l -> (Action) new ActionBomb(0, l.idFactoryTgt, l.idFactorySrc))
+					.peek(a -> System.err.println("\t-> " + a.toCommand()))
 					.collect(Collectors.toList()));
-
-			actions.forEach(a -> System.err.println("\t-> " + a.toCommand()));
 
 //			// target a factory with more than 50 cyborgs
 //			List<Action> bombActions = factoryMap.values().stream()
@@ -333,31 +343,20 @@ class Factory
 						return t1.nbCyborgs >= t2.nbCyborgs ? 1 : -1;
 					}
 				})
+				.limit(3)
 				.map(l -> new CandidateFactory(l.distance, factoryMap.get(l.idFactoryTgt)))
 				.collect(Collectors.toList());
 		if (candidateTargetFactories.isEmpty())
 			return actions;
 
-		// now, create a move action for each target factory, ensuring source factory have enough cyborgs to move
-		// number of cyborgs available for move actions
+		// try to equilibrate the cyborgs to move between all the targets (consider at least 1 cyborg per factory)
+		double totalTarget = candidateTargetFactories.stream().mapToInt(c -> c.factory.nbCyborgs > 0 ? c.factory.nbCyborgs : 1).sum();
+		System.err.println("\tCompute total " + totalTarget + " for the " + candidateTargetFactories.size() + " candidates");
 		int nbCyborgsToDispatch = nbCyborgs - 1;
 		for (CandidateFactory candidateFactory : candidateTargetFactories)
 		{
-			System.err.println("-> check target factory " + candidateFactory.factory.id + " at distance " + candidateFactory.distance);
-			// compute the target factory's number of cyborgs when move ends
-//			int nbOpponents = targetFactory.projects(l.distance, troopMap);
-			int nbOpponents = candidateFactory.factory.nbCyborgs;
-
-			// enough cyborgs left to fight ?
-			if (nbCyborgsToDispatch <= nbOpponents)
-				continue;
-
-			// if other troops of mine already go there, then compute the difference
-//					int alreadyGo = troopMap.values().stream()
-//							.filter(t -> Owner.isMine(t.owner))
-
-			// ok to move !
-			int nb = nbOpponents + 1;
+			int targetNb = candidateFactory.factory.nbCyborgs > 0 ? candidateFactory.factory.nbCyborgs : 1;
+			int nb = (int) Math.ceil(this.nbCyborgs * targetNb / totalTarget);
 			nbCyborgsToDispatch -= nb;
 			System.err.println("\ttry to move " + nb + " to target " + candidateFactory.factory.id + " at " + candidateFactory.distance + " (remains "
 					+ nbCyborgsToDispatch + ")");
